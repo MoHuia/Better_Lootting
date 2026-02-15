@@ -10,12 +10,8 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import net.minecraft.util.Mth;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Rarity;
-import net.minecraft.world.phys.AABB;
 import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
@@ -24,191 +20,123 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 客户端核心控制器 (Refactored).
+ * <p>
+ * 作为 MVC 模式中的 Controller/Model 混合体：
+ * 1. 维护状态 (Model): 物品列表、选中索引、过滤模式。
+ * 2. 响应事件 (Controller): 委托 LootScanner 进行计算，委托 PickupHandler 处理输入。
+ */
 public class Core {
     public static final Core INSTANCE = new Core();
 
     public enum FilterMode { ALL, RARE_ONLY }
 
-    private static final double PICKUP_EXPAND_XZ = 1.0;
-    private static final double PICKUP_EXPAND_Y = 0.5;
+    // --- 助手模块 ---
+    private final PickupHandler pickupHandler = new PickupHandler();
 
-    private static final int LONG_PRESS_THRESHOLD = 15;
-
-    // 核心数据
+    // --- 核心数据 ---
     private List<ItemEntity> nearbyItems = new ArrayList<>();
     private final Set<Item> cachedInventoryItems = new HashSet<>();
+
+    // --- UI 状态 ---
     private int selectedIndex = 0;
     private int targetScrollOffset = 0;
 
-    // 状态控制
-    private int tickCounter = 0;
+    // --- 配置与控制 ---
     private FilterMode filterMode = FilterMode.ALL;
-
-    // 自动拾取相关状态
     private boolean isAutoMode = false;
-    private int autoPickupCooldown = 0;
-
-    // 长按交互状态
-    private int pickupHoldTicks = 0;
-    private boolean hasTriggeredBatch = false;
-
-    // 按键滚动计时器
-    private int scrollKeyHoldTime = 0;
-
-    private final Comparator<ItemEntity> stableComparator = (e1, e2) -> {
-        ItemStack s1 = e1.getItem();
-        ItemStack s2 = e2.getItem();
-        Rarity r1 = s1.getRarity();
-        Rarity r2 = s2.getRarity();
-        int rDiff = r2.ordinal() - r1.ordinal();
-        if (rDiff != 0) return rDiff;
-        boolean enc1 = s1.isEnchanted();
-        boolean enc2 = s2.isEnchanted();
-        if (enc1 != enc2) return enc1 ? -1 : 1;
-        int nameDiff = s1.getHoverName().getString().compareTo(s2.getHoverName().getString());
-        if (nameDiff != 0) return nameDiff;
-        return Integer.compare(e1.getId(), e2.getId());
-    };
+    private int tickCounter = 0;
+    private int scrollKeyHoldTime = 0; // 简单的辅助滚动计时，保留在此处即可
 
     private Core() {
         MinecraftForge.EVENT_BUS.register(this);
         FilterWhitelist.INSTANCE.init();
     }
 
-    // --- Getters ---
+    // --- Public API (供 HUD 渲染调用) ---
+
     public List<ItemEntity> getNearbyItems() { return nearbyItems; }
     public int getSelectedIndex() { return selectedIndex; }
     public int getTargetScrollOffset() { return targetScrollOffset; }
     public boolean hasItems() { return !nearbyItems.isEmpty(); }
     public FilterMode getFilterMode() { return filterMode; }
     public boolean isAutoMode() { return isAutoMode; }
+    public boolean isItemInInventory(Item item) { return cachedInventoryItems.contains(item); }
 
     public float getPickupProgress() {
-        if (!hasItems() || hasTriggeredBatch) return 0.0f;
-        return Mth.clamp((float) pickupHoldTicks / LONG_PRESS_THRESHOLD, 0.0f, 1.0f);
+        return hasItems() ? pickupHandler.getProgress() : 0.0f;
     }
 
-    // --- Static Helpers ---
     public static boolean shouldIntercept() {
-        return INSTANCE.hasItems() || INSTANCE.hasTriggeredBatch;
+        return INSTANCE.hasItems() || INSTANCE.pickupHandler.isInteracting();
     }
 
-    public boolean isItemInInventory(Item item) { return cachedInventoryItems.contains(item); }
-    public static void performPickup() { INSTANCE.doPickup(); }
-    public static void performBatchPickup() { INSTANCE.doBatchPickup(); }
-
-    // --- Logic Control ---
-
-    public void toggleFilterMode() {
-        if (filterMode == FilterMode.ALL) filterMode = FilterMode.RARE_ONLY;
-        else filterMode = FilterMode.ALL;
-        selectedIndex = 0;
-        targetScrollOffset = 0;
-    }
-
-    public void toggleAutoMode() {
-        isAutoMode = !isAutoMode;
-        autoPickupCooldown = 0;
-
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player != null) {
-            Component message;
-            if (isAutoMode) {
-                message = Component.translatable("message.better_looting.auto_on")
-                        .withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD);
-            } else {
-                message = Component.translatable("message.better_looting.auto_off")
-                        .withStyle(ChatFormatting.RED, ChatFormatting.BOLD);
-            }
-            mc.player.displayClientMessage(message, true);
-        }
-    }
-
-    private void doPickup() {
-        if (!nearbyItems.isEmpty() && selectedIndex >= 0 && selectedIndex < nearbyItems.size()) {
-            ItemEntity target = nearbyItems.get(selectedIndex);
-            if (target.isAlive()) NetworkHandler.sendToServer(new PacketPickupItem(target.getId()));
-        }
-    }
-
-    private void doBatchPickup() {
-        doBatchPickupInternal(this.nearbyItems, false);
-    }
-
-    private void doBatchPickupInternal(List<ItemEntity> entitiesToPickup, boolean isAuto) {
-        if (entitiesToPickup.isEmpty()) return;
-        List<Integer> ids = entitiesToPickup.stream()
-                .filter(ItemEntity::isAlive)
-                .map(ItemEntity::getId)
-                .collect(Collectors.toList());
-
-        if (!ids.isEmpty()) NetworkHandler.sendToServer(new PacketBatchPickup(ids, isAuto));
-    }
-
-    // --- Events ---
+    // --- 事件循环 ---
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
-        this.tick();
-        this.handleInput();
-    }
 
-    private void handleInput() {
-        while (KeyInit.TOGGLE_FILTER.consumeClick()) {
-            toggleFilterMode();
+        // 1. 基础检查
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || mc.level == null) {
+            nearbyItems.clear();
+            cachedInventoryItems.clear();
+            return;
         }
-        while (KeyInit.OPEN_CONFIG.consumeClick()) {
-            Minecraft.getInstance().setScreen(new ConfigScreen());
-        }
-        while (KeyInit.TOGGLE_AUTO.consumeClick()) {
-            toggleAutoMode();
-        }
+        if (mc.screen instanceof ConfigScreen) return;
 
-        boolean upDown = KeyInit.SCROLL_UP.isDown();
-        boolean downDown = KeyInit.SCROLL_DOWN.isDown();
+        // 2. 更新数据 (利用 LootScanner)
+        tickCounter++;
+        if (tickCounter % 10 == 0) updateInventoryCache(mc);
 
-        if (upDown || downDown) {
-            scrollKeyHoldTime++;
-            if (scrollKeyHoldTime == 1 || (scrollKeyHoldTime > 10 && scrollKeyHoldTime % 3 == 0)) {
-                if (upDown) {
-                    performScroll(1.0);
-                } else {
-                    performScroll(-1.0);
-                }
+        this.nearbyItems = LootScanner.scan(mc, this.filterMode);
+
+        // 3. 处理自动拾取
+        if (isAutoMode && !nearbyItems.isEmpty()) {
+            if (pickupHandler.canAutoPickup()) {
+                sendBatchPickup(nearbyItems, true);
             }
         } else {
-            scrollKeyHoldTime = 0;
+            pickupHandler.resetAutoCooldown();
         }
+
+        // 4. 更新 UI 索引 (保证索引不越界)
+        validateSelection();
+
+        // 5. 处理玩家输入 (利用 PickupHandler)
+        handleInputLogic();
     }
 
-    @SubscribeEvent
-    public void onScroll(InputEvent.MouseScrollingEvent event) {
-        if (Minecraft.getInstance().screen instanceof ConfigScreen) return;
-        if (nearbyItems.size() <= 1) return;
-        if (Screen.hasShiftDown()) return;
+    private void handleInputLogic() {
+        // A. 功能键处理
+        while (KeyInit.TOGGLE_FILTER.consumeClick()) toggleFilterMode();
+        while (KeyInit.OPEN_CONFIG.consumeClick()) Minecraft.getInstance().setScreen(new ConfigScreen());
+        while (KeyInit.TOGGLE_AUTO.consumeClick()) toggleAutoMode();
 
-        Config.ScrollMode mode = Config.CLIENT.scrollMode.get();
-        boolean allowHudScroll = false;
-
-        switch (mode) {
-            case ALWAYS:
-                allowHudScroll = true;
+        // B. 拾取键处理 (委托给 Handler)
+        PickupHandler.PickupAction action = pickupHandler.tickInput(KeyInit.PICKUP.isDown(), !nearbyItems.isEmpty());
+        switch (action) {
+            case SINGLE:
+                sendSinglePickup();
                 break;
-            case KEY_BIND:
-                allowHudScroll = KeyInit.SCROLL_MODIFIER.isDown();
+            case BATCH:
+                sendBatchPickup(nearbyItems, false);
                 break;
-            case STAND_STILL:
-                Minecraft mc = Minecraft.getInstance();
-                if (mc.player != null) {
-                    double dx = mc.player.getX() - mc.player.xo;
-                    double dz = mc.player.getZ() - mc.player.zo;
-                    allowHudScroll = (dx * dx + dz * dz) < 0.0001;
-                }
+            default:
                 break;
         }
 
-        if (!allowHudScroll) return;
+        // C. 键盘滚动处理
+        handleKeyboardScroll();
+    }
+
+    // --- 滚动与选择逻辑 ---
+
+    @SubscribeEvent
+    public void onMouseScroll(InputEvent.MouseScrollingEvent event) {
+        if (shouldIgnoreScroll()) return;
 
         double scrollDelta = event.getScrollDelta();
         if (scrollDelta != 0) {
@@ -217,105 +145,103 @@ public class Core {
         }
     }
 
-    private void performScroll(double scrollDelta) {
-        if (nearbyItems.size() <= 1) return;
+    private boolean shouldIgnoreScroll() {
+        if (Minecraft.getInstance().screen instanceof ConfigScreen) return true;
+        if (nearbyItems.size() <= 1) return true;
+        if (Screen.hasShiftDown()) return true;
 
-        if (scrollDelta > 0) {
-            selectedIndex--;
-        } else {
-            selectedIndex++;
+        Config.ScrollMode mode = Config.CLIENT.scrollMode.get();
+        if (mode == Config.ScrollMode.ALWAYS) return false;
+        if (mode == Config.ScrollMode.KEY_BIND) return !KeyInit.SCROLL_MODIFIER.isDown();
+        if (mode == Config.ScrollMode.STAND_STILL) {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player == null) return true;
+            double dx = mc.player.getX() - mc.player.xo;
+            double dz = mc.player.getZ() - mc.player.zo;
+            return (dx * dx + dz * dz) >= 0.0001;
         }
-
-        if (selectedIndex < 0) selectedIndex = nearbyItems.size() - 1;
-        if (selectedIndex >= nearbyItems.size()) selectedIndex = 0;
-
-        updateScrollOffset();
+        return true;
     }
 
-    // --- Main Loop ---
+    private void performScroll(double delta) {
+        if (nearbyItems.size() <= 1) return;
+        selectedIndex += (delta > 0) ? -1 : 1;
+        validateSelection(); // 所有的循环和越界逻辑都在这里统一处理
+    }
 
-    private void tick() {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || mc.level == null) {
-            nearbyItems.clear();
-            cachedInventoryItems.clear();
-            pickupHoldTicks = 0;
-            hasTriggeredBatch = false;
-            return;
-        }
-
-        if (mc.screen instanceof ConfigScreen) return;
-
-        tickCounter++;
-
-        if (tickCounter % 10 == 0) {
-            updateInventoryCache(mc);
-        }
-
-        AABB area = mc.player.getBoundingBox().inflate(PICKUP_EXPAND_XZ, PICKUP_EXPAND_Y, PICKUP_EXPAND_XZ);
-        List<ItemEntity> found = mc.level.getEntitiesOfClass(ItemEntity.class, area, entity ->
-                entity.isAlive() && !entity.getItem().isEmpty()
-        );
-
-        // 核心过滤逻辑修改
-        if (filterMode == FilterMode.RARE_ONLY) {
-            found.removeIf(entity -> {
-                ItemStack stack = entity.getItem();
-
-                // 检查白名单 (现在支持完整 NBT)
-                if (FilterWhitelist.INSTANCE.contains(stack)) return false;
-
-                return stack.getRarity() == Rarity.COMMON
-                        && !stack.isEnchanted()
-                        && !Utils.shouldShowTooltip(stack);
-            });
-        }
-
-        if (isAutoMode && !found.isEmpty()) {
-            if (autoPickupCooldown > 0) {
-                autoPickupCooldown--;
-            } else {
-                doBatchPickupInternal(found, true);
-                autoPickupCooldown = 5;
+    private void handleKeyboardScroll() {
+        boolean up = KeyInit.SCROLL_UP.isDown();
+        boolean down = KeyInit.SCROLL_DOWN.isDown();
+        if (up || down) {
+            scrollKeyHoldTime++;
+            if (scrollKeyHoldTime == 1 || (scrollKeyHoldTime > 10 && scrollKeyHoldTime % 3 == 0)) {
+                performScroll(up ? 1.0 : -1.0);
             }
         } else {
-            autoPickupCooldown = 0;
+            scrollKeyHoldTime = 0;
         }
+    }
 
-        found.sort(stableComparator);
-        nearbyItems = found;
-
+    /** 统一处理索引越界、循环滚动和 ScrollOffset 计算 */
+    private void validateSelection() {
         if (nearbyItems.isEmpty()) {
             selectedIndex = 0;
             targetScrollOffset = 0;
-        } else {
-            selectedIndex = Math.max(0, Math.min(selectedIndex, nearbyItems.size() - 1));
-            updateScrollOffset();
+            return;
         }
 
-        handlePickupLogic();
+        // 循环滚动逻辑
+        if (selectedIndex < 0) selectedIndex = nearbyItems.size() - 1;
+        if (selectedIndex >= nearbyItems.size()) selectedIndex = 0;
+
+        // 计算 Offset
+        // 1. 获取 double 类型的值，保留小数 (例如 3.5)
+        double visibleRows = Config.CLIENT.visibleRows.get();
+        if (visibleRows < 1.0) visibleRows = 1.0;
+
+        // 如果物品总数比可见行数还少，不需要滚动
+        if (nearbyItems.size() <= visibleRows) {
+            targetScrollOffset = 0;
+            return;
+        }
+
+        // 2. 向下滚动判断
+        // 如果选中的索引超出了当前 "Offset + 可见行数" 的范围
+        if (selectedIndex >= targetScrollOffset + visibleRows) {
+            // 计算新的 Offset，通过 (int) 强制转换去掉小数部分
+            // 逻辑：让选中的物品出现在列表的最底部
+            targetScrollOffset = (int) (selectedIndex - visibleRows + 1);
+        }
+
+        // 3. 向上滚动判断 (逻辑不变，依然是比较整数)
+        if (selectedIndex < targetScrollOffset) {
+            targetScrollOffset = selectedIndex;
+        }
+
+        // 4. 边界钳制 (Clamp)
+        // 计算最大允许的滚动偏移量，防止底部留白太多
+        int maxOffset = (int) Math.max(0, nearbyItems.size() - visibleRows);
+        targetScrollOffset = Math.max(0, Math.min(targetScrollOffset, maxOffset));
     }
 
-    private void handlePickupLogic() {
-        if (KeyInit.PICKUP.isDown()) {
-            if (!nearbyItems.isEmpty() || hasTriggeredBatch) {
-                pickupHoldTicks++;
-            }
+    // --- 网络与辅助 ---
 
-            if (pickupHoldTicks >= LONG_PRESS_THRESHOLD && !hasTriggeredBatch) {
-                if (!nearbyItems.isEmpty()) {
-                    doBatchPickup();
-                    hasTriggeredBatch = true;
-                }
+    private void sendSinglePickup() {
+        if (selectedIndex >= 0 && selectedIndex < nearbyItems.size()) {
+            ItemEntity target = nearbyItems.get(selectedIndex);
+            if (target.isAlive()) {
+                NetworkHandler.sendToServer(new PacketPickupItem(target.getId()));
             }
-        } else {
-            if (pickupHoldTicks > 0) {
-                if (pickupHoldTicks < LONG_PRESS_THRESHOLD && !hasTriggeredBatch && !nearbyItems.isEmpty()) {
-                    doPickup();
-                }
-            }
-            pickupHoldTicks = 0;
-            hasTriggeredBatch = false;
+        }
+    }
+
+    private void sendBatchPickup(List<ItemEntity> entities, boolean isAuto) {
+        List<Integer> ids = entities.stream()
+                .filter(ItemEntity::isAlive)
+                .map(ItemEntity::getId)
+                .collect(Collectors.toList());
+        if (!ids.isEmpty()) {
+            NetworkHandler.sendToServer(new PacketBatchPickup(ids, isAuto));
         }
     }
 
@@ -327,21 +253,20 @@ public class Core {
         mc.player.getInventory().armor.forEach(s -> { if(!s.isEmpty()) cachedInventoryItems.add(s.getItem()); });
     }
 
-    private void updateScrollOffset() {
-        int maxVisible = Config.CLIENT.visibleRows.get().intValue();
-        if (maxVisible < 1) maxVisible = 1;
+    public void toggleFilterMode() {
+        filterMode = (filterMode == FilterMode.ALL) ? FilterMode.RARE_ONLY : FilterMode.ALL;
+        validateSelection();
+    }
 
-        if (nearbyItems.size() <= maxVisible) {
-            targetScrollOffset = 0;
-            return;
+    public void toggleAutoMode() {
+        isAutoMode = !isAutoMode;
+        pickupHandler.resetAutoCooldown();
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            Component msg = isAutoMode
+                    ? Component.translatable("message.better_looting.auto_on").withStyle(ChatFormatting.GREEN)
+                    : Component.translatable("message.better_looting.auto_off").withStyle(ChatFormatting.RED);
+            mc.player.displayClientMessage(msg, true);
         }
-
-        if (selectedIndex < targetScrollOffset) {
-            targetScrollOffset = selectedIndex;
-        } else if (selectedIndex >= targetScrollOffset + maxVisible) {
-            targetScrollOffset = selectedIndex - maxVisible + 1;
-        }
-
-        targetScrollOffset = Math.max(0, Math.min(targetScrollOffset, nearbyItems.size() - maxVisible));
     }
 }
