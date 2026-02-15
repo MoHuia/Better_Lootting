@@ -24,7 +24,16 @@ public class PickupHandler {
      * @param hasItems 当前是否有可拾取的物品
      * @return 应该触发的操作类型 (NONE, SINGLE, BATCH)
      */
-    public PickupAction tickInput(boolean isKeyDown, boolean hasItems) {
+    public PickupAction tickInput(boolean isKeyDown, boolean isShiftDown, boolean hasItems) {
+        // Shift 强制打断
+        // 只要按下了 Shift 键，立即清空长按进度，并且绝对不返回任何拾取动作
+        if (isShiftDown) {
+            pickupHoldTicks = 0;
+            hasTriggeredBatch = false;
+            return PickupAction.NONE;
+        }
+
+
         if (isKeyDown) {
             // 只有当有物品，或者已经处于批量模式时，才累加计时
             if (hasItems || hasTriggeredBatch) {
@@ -46,6 +55,7 @@ public class PickupHandler {
             if (pickupHoldTicks > 0 && pickupHoldTicks < LONG_PRESS_THRESHOLD && !hasTriggeredBatch && hasItems) {
                 action = PickupAction.SINGLE;
             }
+
 
             // 重置状态
             pickupHoldTicks = 0;

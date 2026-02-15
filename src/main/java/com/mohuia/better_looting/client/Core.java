@@ -153,7 +153,13 @@ public class Core {
         while (KeyInit.OPEN_CONFIG.consumeClick()) Minecraft.getInstance().setScreen(new ConfigScreen());
         while (KeyInit.TOGGLE_AUTO.consumeClick()) toggleAutoMode();
 
-        PickupHandler.PickupAction action = pickupHandler.tickInput(KeyInit.PICKUP.isDown(), !nearbyItems.isEmpty());
+        // 获取真实的按键状态
+        boolean isFKeyDown = KeyInit.PICKUP.isDown();
+        boolean isShiftDown = net.minecraft.client.gui.screens.Screen.hasShiftDown();
+
+        // 将状态传递给状态机
+        PickupHandler.PickupAction action = pickupHandler.tickInput(isFKeyDown, isShiftDown, !nearbyItems.isEmpty());
+
         switch (action) {
             case SINGLE:
                 sendSinglePickup();

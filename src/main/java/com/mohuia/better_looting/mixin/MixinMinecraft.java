@@ -5,6 +5,7 @@ import com.mohuia.better_looting.client.KeyInit;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
+import net.minecraft.client.gui.screens.Screen;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -20,21 +21,27 @@ public class MixinMinecraft {
     @Inject(method = "handleKeybinds", at = @At("HEAD"))
     private void betterLooting$interceptKeybinds(CallbackInfo ci) {
         // 只有当周围有可拾取物品时才进行拦截
+        // 只有当周围有可拾取物品时才进行拦截
         if (Core.shouldIntercept()) {
 
-            // 消耗掉按键点击事件，防止它传递给原版逻辑。
-            // 逻辑由 Core.tick() 中的 isDown() 状态检测接管。
+            // 1. 消耗掉模组自身的 PICKUP 按键点击
+            // (防止原版其他可能绑定到同键位的功能触发，但 Core.java 依然可以通过 isDown() 读取状态)
             while (KeyInit.PICKUP.consumeClick()) {
-                // Do nothing, just eat the input.
+                // Do nothing
             }
 
             // --- 冲突处理 ---
-            // 检查副手交换键，如果它和 PICKUP 是同一个键，也消耗掉它的点击。
+            // 检查副手交换键，如果它和 PICKUP 是同一个键 (默认都是 F)
             KeyMapping swapKey = this.options.keySwapOffhand;
             if (swapKey.same(KeyInit.PICKUP)) {
-                while (swapKey.consumeClick()) {
-                    // Eat it so offhand swap doesn't happen
+
+                // 只有当玩家没有按住 Shift 时，才拦截副手交换
+                if (!Screen.hasShiftDown()) {
+                    while (swapKey.consumeClick()) {
+                        // 吃掉点击事件，阻止原版副手交换
+                    }
                 }
+                // 如果按住了 Shift，则跳过上面的循环，原版逻辑会随后读取到 swapKey 的点击并执行交换
             }
         }
     }
