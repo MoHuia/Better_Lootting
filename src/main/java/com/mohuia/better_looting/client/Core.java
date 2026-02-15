@@ -257,8 +257,8 @@ public class Core {
 
         // 2. 向下滚动视口推移
         // 逻辑：如果选中项超出了视口底部，则推移视口让选中项显示在最底部
-        if (selectedIndex >= targetScrollOffset + visibleRows) {
-            targetScrollOffset = (int) (selectedIndex - visibleRows + 1);
+        if (selectedIndex + 1 > targetScrollOffset + visibleRows) {
+            targetScrollOffset = (int) Math.ceil(selectedIndex - visibleRows + 1);
         }
 
         // 3. 向上滚动视口推移
@@ -269,7 +269,7 @@ public class Core {
 
         // 4. 边界钳制 (Clamp)
         // 限制最大偏移量，防止列表向上滚动过度导致底部留白
-        int maxOffset = (int) Math.max(0, nearbyItems.size() - visibleRows);
+        int maxOffset = (int) Math.ceil(Math.max(0, nearbyItems.size() - visibleRows));
         targetScrollOffset = Math.max(0, Math.min(targetScrollOffset, maxOffset));
     }
 
