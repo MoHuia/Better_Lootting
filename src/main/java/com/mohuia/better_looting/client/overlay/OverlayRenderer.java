@@ -3,6 +3,7 @@ package com.mohuia.better_looting.client.overlay;
 import com.mohuia.better_looting.client.Constants;
 import com.mohuia.better_looting.client.Core;
 import com.mohuia.better_looting.client.Utils;
+import com.mohuia.better_looting.client.VisualItemEntry;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
 import net.minecraft.client.Minecraft;
@@ -46,7 +47,10 @@ public class OverlayRenderer {
 
     // --- 2. 物品行渲染 ---
 
-    public void renderItemRow(GuiGraphics gui, int x, int y, int width, ItemStack stack, boolean selected, float bgAlpha, float textAlpha, boolean isNew) {
+    public void renderItemRow(GuiGraphics gui, int x, int y, int width, VisualItemEntry entry, boolean selected, float bgAlpha, float textAlpha, boolean isNew) {
+        ItemStack stack = entry.getItem(); // 获取用于显示的物品栈
+        int count = entry.getCount();      // 获取真实的总数量
+
         int bgColor = selected ? Constants.COLOR_BG_SELECTED : Constants.COLOR_BG_NORMAL;
         renderRoundedRect(gui, x, y, width, Constants.ITEM_HEIGHT, Utils.applyAlpha(bgColor, bgAlpha));
 
@@ -59,7 +63,12 @@ public class OverlayRenderer {
 
         // 绘制物品图标
         gui.renderItem(stack, x + 3, y + 3);
-        gui.renderItemDecorations(mc.font, stack, x + 3, y + 3);
+        // 如果数量为 1，不显示文字
+        // 如果数量 > 1，显示自定义文字（即支持 > 64 的数字）
+        String countText = (count > 1) ? compactCount(count) : null;
+
+        // 使用该重载方法，传入自定义 String 替代原版数量绘制
+        gui.renderItemDecorations(mc.font, stack, x + 3, y + 3, countText);
 
         if (alpha255 <= 5) return; // 透明度过低不绘制文字
 
@@ -81,6 +90,12 @@ public class OverlayRenderer {
             gui.drawString(mc.font, "NEW", 0, 0, Utils.colorWithAlpha(Constants.COLOR_NEW_LABEL, alpha255), true);
             pose.popPose();
         }
+    }
+
+    /** 简单的数字格式化 */
+    private String compactCount(int count) {
+        if (count >= 10000) return (count / 1000) + "k"; // 10k+
+        return String.valueOf(count);
     }
 
     // --- 3. 滚动条渲染 ---

@@ -49,7 +49,7 @@ public class Core {
     private final PickupHandler pickupHandler = new PickupHandler();
 
     /** 当前扫描到的周围掉落物实体列表 */
-    private List<ItemEntity> nearbyItems = new ArrayList<>();
+    private List<VisualItemEntry> nearbyItems = new ArrayList<>();
     /** 玩家当前背包内的物品种类缓存（用于快速判断是否为已有物品） */
     private final Set<Item> cachedInventoryItems = new HashSet<>();
 
@@ -84,7 +84,7 @@ public class Core {
     //               Public API (供 HUD 渲染)
     // =========================================
 
-    public List<ItemEntity> getNearbyItems() { return nearbyItems; }
+    public List<VisualItemEntry> getNearbyItems() { return nearbyItems; }
     public int getSelectedIndex() { return selectedIndex; }
     public int getTargetScrollOffset() { return targetScrollOffset; }
     public boolean hasItems() { return !nearbyItems.isEmpty(); }
@@ -134,16 +134,18 @@ public class Core {
         // 2. 自动拾取逻辑
         if (isAutoMode && !nearbyItems.isEmpty()) {
             if (pickupHandler.canAutoPickup()) {
-                sendBatchPickup(nearbyItems, true);
+                // 自动拾取所有合并后的物品
+                List<ItemEntity> allEntities = new ArrayList<>();
+                for (VisualItemEntry entry : nearbyItems) {
+                    allEntities.addAll(entry.getSourceEntities());
+                }
+                sendBatchPickup(allEntities, true); // 这里复用原本的逻辑，只要传入实体列表即可
             }
         } else {
             pickupHandler.resetAutoCooldown();
         }
 
-        // 3. 校验并钳制 UI 索引 (防止因为物品突然消失导致越界崩溃)
         validateSelection();
-
-        // 4. 处理玩家输入
         handleInputLogic();
     }
 
@@ -153,11 +155,9 @@ public class Core {
         while (KeyInit.OPEN_CONFIG.consumeClick()) Minecraft.getInstance().setScreen(new ConfigScreen());
         while (KeyInit.TOGGLE_AUTO.consumeClick()) toggleAutoMode();
 
-        // 获取真实的按键状态
         boolean isFKeyDown = KeyInit.PICKUP.isDown();
         boolean isShiftDown = net.minecraft.client.gui.screens.Screen.hasShiftDown();
 
-        // 将状态传递给状态机
         PickupHandler.PickupAction action = pickupHandler.tickInput(isFKeyDown, isShiftDown, !nearbyItems.isEmpty());
 
         switch (action) {
@@ -165,7 +165,12 @@ public class Core {
                 sendSinglePickup();
                 break;
             case BATCH:
-                sendBatchPickup(nearbyItems, false);
+                // 批量拾取：解包当前列表所有条目的所有实体
+                List<ItemEntity> allEntities = new ArrayList<>();
+                for (VisualItemEntry entry : nearbyItems) {
+                    allEntities.addAll(entry.getSourceEntities());
+                }
+                sendBatchPickup(allEntities, false);
                 break;
             default:
                 break;
@@ -277,13 +282,35 @@ public class Core {
     //               网络发包与状态切换
     // =========================================
 
-    /** 向服务端发送单次拾取请求 */
+    /** 向服务端发送单次拾取请求 (限制最大 64 个) */
     private void sendSinglePickup() {
         if (selectedIndex >= 0 && selectedIndex < nearbyItems.size()) {
-            ItemEntity target = nearbyItems.get(selectedIndex);
-            if (target.isAlive()) {
-                // 仅发送实体的网络 ID，由服务端处理安全校验和背包转移
-                NetworkHandler.sendToServer(new PacketPickupItem(target.getId()));
+            VisualItemEntry entry = nearbyItems.get(selectedIndex);
+
+            // 1. 获取所有源实体并复制一份用于排序
+            List<ItemEntity> candidates = new ArrayList<>(entry.getSourceEntities());
+
+            // 2. 按距离排序：优先拾取离玩家最近的物品
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player != null) {
+                candidates.sort(Comparator.comparingDouble(e -> e.distanceToSqr(mc.player)));
+            }
+
+            // 3. 贪婪选择：凑够一组 (64个)
+            List<ItemEntity> targets = new ArrayList<>();
+            int currentTotal = 0;
+
+            for (ItemEntity entity : candidates) {
+                // 如果当前累计数量已经达到或超过 64，停止选取
+                if (currentTotal >= 64) break;
+
+                targets.add(entity);
+                currentTotal += entity.getItem().getCount();
+            }
+
+            // 发送筛选后的实体列表
+            if (!targets.isEmpty()) {
+                sendBatchPickup(targets, false);
             }
         }
     }
@@ -293,6 +320,7 @@ public class Core {
      * @param isAuto   是否是由自动拾取触发
      */
     private void sendBatchPickup(List<ItemEntity> entities, boolean isAuto) {
+        // 原本的逻辑保持不变，它接收 List<ItemEntity>
         List<Integer> ids = entities.stream()
                 .filter(ItemEntity::isAlive)
                 .map(ItemEntity::getId)

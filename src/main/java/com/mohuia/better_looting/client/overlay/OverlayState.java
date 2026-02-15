@@ -1,5 +1,6 @@
 package com.mohuia.better_looting.client.overlay;
 
+import com.mohuia.better_looting.client.VisualItemEntry;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.item.ItemEntity;
 import java.util.*;
@@ -81,8 +82,10 @@ public class OverlayState {
     }
 
     /** 清理已经不存在的实体的动画状态 */
-    public void cleanupAnimations(List<ItemEntity> currentItems) {
-        Set<Integer> currentIds = currentItems.stream().map(ItemEntity::getId).collect(Collectors.toSet());
+    public void cleanupAnimations(List<VisualItemEntry> currentItems) {
+        Set<Integer> currentIds = currentItems.stream()
+                .map(VisualItemEntry::getPrimaryId)
+                .collect(Collectors.toSet());
         itemEntryAnimations.keySet().retainAll(currentIds);
     }
 

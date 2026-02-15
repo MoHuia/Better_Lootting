@@ -1,9 +1,6 @@
 package com.mohuia.better_looting.client.overlay;
 
-import com.mohuia.better_looting.client.Constants;
-import com.mohuia.better_looting.client.Core;
-import com.mohuia.better_looting.client.KeyInit;
-import com.mohuia.better_looting.client.Utils;
+import com.mohuia.better_looting.client.*;
 import com.mohuia.better_looting.config.Config;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
@@ -120,11 +117,11 @@ public class Overlay {
             // 视锥剔除：跳过不可见的行
             if (i < startIdx - 1 || i > endIdx + 1) continue;
 
-            ItemEntity entity = nearbyItems.get(i);
+            VisualItemEntry entry = nearbyItems.get(i); // 获取 VisualItemEntry
             boolean isSelected = (i == core.getSelectedIndex());
 
             // 获取单个物品的进入动画进度
-            float entryProgress = state.getItemEntryProgress(entity.getId());
+            float entryProgress = state.getItemEntryProgress(entry.getPrimaryId());
             // 计算滑入位移 (0 -> 1 的过程对应 50 -> 0 的像素位移)
             float entryOffset = (1.0f - Utils.easeOutCubic(entryProgress)) * 50.0f;
 
@@ -143,8 +140,8 @@ public class Overlay {
             int y = layout.startY + (int) ((i - state.currentScroll) * layout.itemHeightTotal);
 
             // 绘制行
-            renderer.renderItemRow(gui, Constants.LIST_X, y, layout.panelWidth, entity.getItem(),
-                    isSelected, finalBgAlpha, finalTextAlpha, !core.isItemInInventory(entity.getItem().getItem()));
+            renderer.renderItemRow(gui, Constants.LIST_X, y, layout.panelWidth, entry,
+                    isSelected, finalBgAlpha, finalTextAlpha, !core.isItemInInventory(entry.getItem().getItem()));
 
             if (isSelected) {
                 renderPrompt = true;
